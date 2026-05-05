@@ -12,30 +12,31 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Disable keep-alive globally to prevent CONNECTION_LIMIT_EXCEEDED from YouTube/Google.
-// Railway shares IPs between services, so too many persistent connections from one IP
-// causes upstream servers to reject with TooManyConnections error.
-http.globalAgent = new http.Agent({
-  keepAlive: false,
-  maxSockets: 64,
-  timeout: 30000,
-});
-https.globalAgent = new https.Agent({
-  keepAlive: false,
-  maxSockets: 64,
-  timeout: 30000,
-});
+// Configure global agents for high performance and to avoid IP blocks.
+// We use a high number of sockets and a short timeout to prevent stale connections
+// from piling up on Railway's shared infrastructure.
+const agentOptions = {
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  maxSockets: Infinity,
+  maxFreeSockets: 256,
+  timeout: 60000,
+};
+
+http.globalAgent = new http.Agent(agentOptions);
+https.globalAgent = new https.Agent(agentOptions);
 
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
-  // maintainConnections: false prevents the Bare server from pooling
-  // persistent connections to upstream hosts (key fix for shared-IP hosting).
+  // maintainConnections: false is crucial for serverless/shared-IP hosting
+  // as it prevents the proxy from trying to manage a persistent connection pool
+  // which often triggers CONNECTION_LIMIT_EXCEEDED on upstream sites.
   const bareServer = createBareServer('/bare/', {
     maintainConnections: false,
-    logErrors: false,
-  } as any);
+    logErrors: true,
+  });
 
   app.use(cors());
 
@@ -57,19 +58,8 @@ async function startServer() {
 
   const server = createServer();
 
-  // Handle ALL HTTP requests: route /bare/ to Bare server, rest to Express
+  // Handle ALL HTTP requests
   server.on('request', (req, res) => {
-    // Railway acts as a reverse proxy. To prevent the Bare Server from seeing all requests
-    // as coming from the same internal proxy IP (which triggers CONNECTION_LIMIT_EXCEEDED),
-    // we trick the bare server by giving each request a unique fake IP.
-    // YouTube opens dozens of simultaneous connections, which easily triggers the limit
-    // even if the true client IP is used. This bypasses the connection limit entirely.
-    const fakeIp = `127.0.0.${Math.floor(Math.random() * 255)}`;
-    Object.defineProperty(req.socket, 'remoteAddress', {
-      get: () => fakeIp,
-      configurable: true
-    });
-
     if (bareServer.shouldRoute(req)) {
       bareServer.routeRequest(req, res);
     } else {
@@ -77,14 +67,8 @@ async function startServer() {
     }
   });
 
-  // Handle WebSocket upgrades for Bare server
+  // Handle WebSocket upgrades
   server.on('upgrade', (req, socket, head) => {
-    const fakeIp = `127.0.0.${Math.floor(Math.random() * 255)}`;
-    Object.defineProperty(socket, 'remoteAddress', {
-      get: () => fakeIp,
-      configurable: true
-    });
-
     if (bareServer.shouldRoute(req)) {
       bareServer.routeUpgrade(req, socket, head);
     } else {
@@ -94,7 +78,7 @@ async function startServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Bare server active at /bare/ [keep-alive disabled]`);
+    console.log(`Bare server active at /bare/`);
   });
 }
 
