@@ -13,15 +13,21 @@ async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
   
-  // Initialize Bare Server with minimal options for stability
+  // Initialize Bare Server
   const bareServer = createBareServer('/bare/', {
     maintainConnections: false,
     logErrors: true,
   });
 
+  // CRITICAL FIX: The Bare Server has an internal connection limit of 10 per IP.
+  // In Railway, all requests appear to come from the same internal proxy IP.
+  // This hack replaces the internal tracking Map with a dummy that always says 0 connections.
+  (bareServer as any).connections = new Map();
+  const originalGet = Map.prototype.get;
+  (bareServer as any).connections.get = function() { return []; }; 
+
   app.use(cors());
 
-  // Production vs Development routing
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -32,7 +38,6 @@ async function startServer() {
     const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res, next) => {
-      // Don't interfere with Bare Server requests
       if (req.path.startsWith('/bare/')) return next();
       res.sendFile(path.join(distPath, 'index.html'));
     });
@@ -40,7 +45,6 @@ async function startServer() {
 
   const server = createServer();
 
-  // Route requests to Bare Server or Express App
   server.on('request', (req, res) => {
     if (bareServer.shouldRoute(req)) {
       bareServer.routeRequest(req, res);
@@ -49,7 +53,6 @@ async function startServer() {
     }
   });
 
-  // Route WebSocket upgrades to Bare Server
   server.on('upgrade', (req, socket, head) => {
     if (bareServer.shouldRoute(req)) {
       bareServer.routeUpgrade(req, socket, head);
@@ -59,13 +62,11 @@ async function startServer() {
   });
 
   server.on('listening', () => {
-    console.log(`Server is listening on port ${PORT}`);
+    console.log(`Server listening on port ${PORT}`);
   });
 
   server.listen(PORT, '0.0.0.0');
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-});
+startServer().catch(console.error);
 
