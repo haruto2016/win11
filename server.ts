@@ -61,16 +61,14 @@ async function startServer() {
   server.on('request', (req, res) => {
     // Railway acts as a reverse proxy. To prevent the Bare Server from seeing all requests
     // as coming from the same internal proxy IP (which triggers CONNECTION_LIMIT_EXCEEDED),
-    // we override the socket's remoteAddress with the true client IP from X-Forwarded-For.
-    if (req.headers['x-forwarded-for']) {
-      const forwardedIp = (req.headers['x-forwarded-for'] as string).split(',')[0].trim();
-      if (!req.socket.remoteAddress || req.socket.remoteAddress !== forwardedIp) {
-        Object.defineProperty(req.socket, 'remoteAddress', {
-          get: () => forwardedIp,
-          configurable: true
-        });
-      }
-    }
+    // we trick the bare server by giving each request a unique fake IP.
+    // YouTube opens dozens of simultaneous connections, which easily triggers the limit
+    // even if the true client IP is used. This bypasses the connection limit entirely.
+    const fakeIp = `127.0.0.${Math.floor(Math.random() * 255)}`;
+    Object.defineProperty(req.socket, 'remoteAddress', {
+      get: () => fakeIp,
+      configurable: true
+    });
 
     if (bareServer.shouldRoute(req)) {
       bareServer.routeRequest(req, res);
@@ -81,15 +79,11 @@ async function startServer() {
 
   // Handle WebSocket upgrades for Bare server
   server.on('upgrade', (req, socket, head) => {
-    if (req.headers['x-forwarded-for']) {
-      const forwardedIp = (req.headers['x-forwarded-for'] as string).split(',')[0].trim();
-      if (!socket.remoteAddress || socket.remoteAddress !== forwardedIp) {
-        Object.defineProperty(socket, 'remoteAddress', {
-          get: () => forwardedIp,
-          configurable: true
-        });
-      }
-    }
+    const fakeIp = `127.0.0.${Math.floor(Math.random() * 255)}`;
+    Object.defineProperty(socket, 'remoteAddress', {
+      get: () => fakeIp,
+      configurable: true
+    });
 
     if (bareServer.shouldRoute(req)) {
       bareServer.routeUpgrade(req, socket, head);
