@@ -2,7 +2,8 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import cors from 'cors';
 import path from 'path';
-import { createServer } from 'http';
+import http, { createServer } from 'http';
+import https from 'https';
 import { createBareServer } from '@tomphttp/bare-server-node';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
@@ -11,11 +12,30 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Disable keep-alive globally to prevent CONNECTION_LIMIT_EXCEEDED from YouTube/Google.
+// Railway shares IPs between services, so too many persistent connections from one IP
+// causes upstream servers to reject with TooManyConnections error.
+http.globalAgent = new http.Agent({
+  keepAlive: false,
+  maxSockets: 64,
+  timeout: 30000,
+});
+https.globalAgent = new https.Agent({
+  keepAlive: false,
+  maxSockets: 64,
+  timeout: 30000,
+});
+
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
-  
-  const bareServer = createBareServer('/bare/');
+
+  // maintainConnections: false prevents the Bare server from pooling
+  // persistent connections to upstream hosts (key fix for shared-IP hosting).
+  const bareServer = createBareServer('/bare/', {
+    maintainConnections: false,
+    logErrors: false,
+  } as any);
 
   app.use(cors());
 
@@ -29,14 +49,8 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    // IMPORTANT: The wildcard catch-all must NOT intercept /bare/ requests.
-    // Bare server is handled at the HTTP server level (below), so this
-    // catch-all will only fire for non-bare requests.
     app.get('*', (req, res, next) => {
-      // Let /bare/ requests fall through to the raw HTTP handler
-      if (req.path.startsWith('/bare/')) {
-        return next();
-      }
+      if (req.path.startsWith('/bare/')) return next();
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
@@ -52,7 +66,7 @@ async function startServer() {
     }
   });
 
-  // Handle WebSocket upgrades for Bare server (needed for sites like YouTube)
+  // Handle WebSocket upgrades for Bare server
   server.on('upgrade', (req, socket, head) => {
     if (bareServer.shouldRoute(req)) {
       bareServer.routeUpgrade(req, socket, head);
@@ -63,8 +77,9 @@ async function startServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Bare server active at /bare/`);
+    console.log(`Bare server active at /bare/ [keep-alive disabled]`);
   });
 }
 
 startServer();
+
