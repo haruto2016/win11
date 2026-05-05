@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Shield, RefreshCw, ArrowLeft, ArrowRight, Home, ShieldX, Frame, Maximize } from 'lucide-react';
+import { Search, Shield, RefreshCw, ArrowLeft, ArrowRight, Home, ShieldX, Frame, Maximize, Loader2 } from 'lucide-react';
 
 export function ProxyApp() {
   const [history, setHistory] = useState<string[]>([]);
@@ -11,6 +11,7 @@ export function ProxyApp() {
   const [cryptoMode, setCryptoMode] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [swReady, setSwReady] = useState(false);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -18,9 +19,7 @@ export function ProxyApp() {
     setUrl(newUrl);
     setInputUrl(newUrl);
     
-    // Add to history and remove future forward history
     const newHistory = history.slice(0, historyIndex + 1);
-    // don't add if it's the exact same as current
     if (newHistory.length === 0 || newHistory[newHistory.length - 1] !== newUrl) {
       newHistory.push(newUrl);
       setHistory(newHistory);
@@ -59,7 +58,6 @@ export function ProxyApp() {
     setLoading(true);
     let finalUrl = inputUrl.trim();
 
-    // URL encode or ensure protocol
     if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
       if (!finalUrl.includes('.') || finalUrl.includes(' ')) {
         finalUrl = 'https://www.google.com/search?q=' + encodeURIComponent(finalUrl);
@@ -76,7 +74,6 @@ export function ProxyApp() {
     const newMode = !cryptoMode;
     setCryptoMode(newMode);
     
-    // Refresh the current page with the new mode
     if (url && url !== 'https://www.croxyproxy.com/') {
       handleReload();
     }
@@ -98,15 +95,43 @@ export function ProxyApp() {
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
 
-    // Register UV service worker
+    // Register UV service worker and wait until it's fully active
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js', {
         scope: '/uv/service/'
-      }).then((reg) => {
+      }).then(async (reg) => {
         console.log('UV Service Worker registered with scope:', reg.scope);
+        
+        // Wait for the SW to become active
+        const sw = reg.active || reg.waiting || reg.installing;
+        if (sw) {
+          if (sw.state === 'activated') {
+            setSwReady(true);
+          } else {
+            sw.addEventListener('statechange', () => {
+              if (sw.state === 'activated') {
+                setSwReady(true);
+              }
+            });
+          }
+        }
+        
+        // Also check if there's already a controlling SW
+        if (navigator.serviceWorker.controller) {
+          setSwReady(true);
+        }
       }).catch(err => {
         console.error('UV Service Worker registration failed:', err);
+        // Still allow browsing even if SW fails
+        setSwReady(true);
       });
+
+      // If a controller already exists from a previous load
+      if (navigator.serviceWorker.controller) {
+        setSwReady(true);
+      }
+    } else {
+      setSwReady(true);
     }
 
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -119,7 +144,6 @@ export function ProxyApp() {
       if (uvConfig && uvConfig.prefix && uvConfig.encodeUrl) {
         return uvConfig.prefix + uvConfig.encodeUrl(targetUrl);
       }
-      // UV config not yet loaded — show error hint in console
       console.warn('Ultraviolet config not loaded yet. Make sure /uv/uv.config.js is accessible.');
     }
     return targetUrl;
@@ -242,17 +266,24 @@ export function ProxyApp() {
                 <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
               </div>
             )}
-            <iframe 
-              key={reloadKey}
-              ref={iframeRef}
-              src={getUnblockedUrl(url)} 
-              className="w-full h-full border-none bg-white flex-1"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-popups-to-escape-sandbox allow-top-navigation allow-presentation allow-pointer-lock"
-              onLoad={() => setLoading(false)}
-              onError={() => setLoading(false)}
-              title="Browser"
-              allow="camera; microphone; fullscreen; display-capture; clipboard-read; clipboard-write; autoplay"
-            />
+            {cryptoMode && !swReady ? (
+              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-white">
+                <Loader2 size={48} className="text-emerald-500 animate-spin mb-4" />
+                <p className="text-gray-600 font-medium">Initializing Network Unblocker Engine...</p>
+              </div>
+            ) : (
+              <iframe 
+                key={reloadKey}
+                ref={iframeRef}
+                src={getUnblockedUrl(url)} 
+                className="w-full h-full border-none bg-white flex-1"
+                {...(cryptoMode ? {} : { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-popups-to-escape-sandbox allow-top-navigation allow-presentation allow-pointer-lock" })}
+                onLoad={() => setLoading(false)}
+                onError={() => setLoading(false)}
+                title="Browser"
+                allow="camera; microphone; fullscreen; display-capture; clipboard-read; clipboard-write; autoplay"
+              />
+            )}
           </>
         )}
       </div>
