@@ -1,0 +1,6 @@
+{
+  "name": "Windows 11 Web Simulator",
+  "description": "A browser-based OS simulator featuring a virtual file system, simulated .exe installation, a proxy-concept browser, and .img file export/import. Designed as a secure, sandboxed web desktop environment.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
